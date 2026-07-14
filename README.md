@@ -21,18 +21,22 @@
                 │ build_snapshot()
 ┌───────────────▼─────────────────────────────────────────────┐
 │ event_hub/      【2】事件中心:采集编排 + 事件服务 + 广播渠道   │
-│   collector.py   主进程:定时快照 → 广播 + 完成/额度事件        │
+│   collector.py   主进程:定时快照 → 发 MQTT + 完成/额度事件     │
 │   eventserver.py hook POST → 事件(agent 一结束就实时上报)     │
-│   thumbserver.py 灰度缩略图 + 固件 OTA(/fw)HTTP 服务          │
+│   thumbserver.py 固件 OTA(/fw)HTTP 服务(设备走 WiFi 拉)     │
 │   channels/                                                   │
-│     mqtt.py   MQTT 渠道(retained 状态 + 事件 + 指令)——现役   │
-│     ble.py    蓝牙渠道(飞牛 NAS 当 BLE 中心)——已验证 PoC     │
+│     mqtt.py   MQTT 渠道(collector→broker 发布)               │
+│     ble.py    蓝牙渠道 daemon:订阅 broker → BLE 转发给设备     │
 └───────────────┬─────────────────────────────────────────────┘
-                │ WiFi+MQTT(现役) / BLE(规划中)
+     broker(飞牛 mosquitto) │ BLE(NUS,分帧)
 ┌───────────────▼─────────────────────────────────────────────┐
 │ firmware/       【3】设备 ROM(M5PaperS3 / ESP32-S3)          │
-│   墨水屏渲染状态板 + 蜂鸣通知 + 深睡省电 + 无线 OTA。           │
+│   纯 BLE 外设:待命屏(最近事件列表)+ 事件→蜂鸣+全屏通知卡;    │
+│   WiFi 仅在收到 BLE "ota" 指令时临时开做 OTA。                 │
 └─────────────────────────────────────────────────────────────┘
+
+运行位置:collector 在 Mac Mini(日志在此);broker + BLE 桥在飞牛 NAS(Linux/BlueZ,常开、无
+macOS 蓝牙权限坑);OTA 固件服务(thumbserver)留 Mac Mini(设备走家里 WiFi 可达)。
 ```
 
 ## 目录
@@ -41,10 +45,10 @@
 |---|---|
 | `collectors/` | codex/claude 日志解析(`codex.py`/`claude.py`/`common.py`)+ 快照组装(`snapshot.py`) |
 | `event_hub/` | 事件中心主进程 `collector.py`、事件接收 `eventserver.py`、缩略图+OTA `thumbserver.py` |
-| `event_hub/channels/` | 广播渠道:`mqtt.py`(现役)、`ble.py`(蓝牙,PoC 已验证);后续可加 webhook 等 |
-| `firmware/` | M5PaperS3 固件(PlatformIO + M5Unified,当前 v22) |
+| `event_hub/channels/` | 广播渠道:`mqtt.py`(collector 发布)、`ble.py`(飞牛 BLE 桥 daemon);后续可加 webhook 等 |
+| `firmware/` | M5PaperS3 固件(PlatformIO + M5Unified + NimBLE,当前 v23:纯 BLE 通知端) |
 | `experiments/ble-poc/` | BLE 外设验证固件(留档) |
-| `deploy/` | 部署件:launchd 模板、`mosquitto.conf`、`push_fw.sh`、agent hooks |
+| `deploy/` | 部署件:launchd 模板、`ble-bridge.service`(飞牛 systemd)、`mosquitto.conf`、`push_fw.sh`、agent hooks |
 | `tools/sim_render.py` | 墨水屏布局模拟器(在电脑上渲染 PNG 迭代设计,不必反复烧录) |
 | `config/config.example.toml` | 配置示例(复制为 `config/config.toml` 填真实值,已被 git 忽略) |
 
@@ -68,29 +72,45 @@ python3 -m event_hub.collector
 
 MQTT broker 用 mosquitto:`deploy/mosquitto.conf` 是最小配置(局域网监听 + 允许匿名,仅家用)。
 
-### 设备固件
+### 飞牛 NAS(broker + BLE 桥)
+
+```bash
+sudo apt install -y bluez mosquitto            # 蓝牙栈 + broker
+pip3 install --break-system-packages bleak paho-mqtt
+# 部署仓库到飞牛,装 systemd 服务(把 __INSTALL_DIR__ 换成仓库绝对路径):
+sudo cp deploy/ble-bridge.service /etc/systemd/system/
+sudo systemctl daemon-reload && sudo systemctl enable --now ble-bridge
+# 联调:手动发一条到设备
+python3 -m event_hub.channels.ble --test "手动测试通知"
+```
+
+### 设备固件(纯 BLE 通知端)
 
 ```bash
 cd firmware
-cp include/secrets.h.example include/secrets.h   # 填 WiFi + broker IP
+cp include/secrets.h.example include/secrets.h   # WiFi(仅 OTA 用)+ OTA 服务器 host(Mac Mini 家里 IP)
 pio run -t upload -t monitor                      # 首次 USB 烧录
 ```
-之后改固件只需 `deploy/push_fw.sh`(把 `config.h` 的 `FW_VERSION` +1 后跑),设备开机/定期
-或收到 `m5paper/cmd=ota` 指令自动**无线更新**,不必再插线。
+之后改固件:`deploy/push_fw.sh`(`config.h` 的 `FW_VERSION` +1 后跑)发布 → 飞牛发
+`m5paper/cmd=ota` → 桥经 BLE 通知设备 → 设备临时开 WiFi 从 Mac Mini 拉固件**无线更新**,不必插线。
 
-## 事件与主题(MQTT)
+## 事件与主题
+
+collector 发布到飞牛 broker;BLE 桥订阅后转发给设备。
 
 | Topic | QoS | 说明 |
 |---|---|---|
-| `m5paper/state` | 0 + retained | 完整状态板快照(额度 + 会话列表),几 KB JSON |
-| `m5paper/events` | 1(离线排队) | 离散事件:`done` / `needs_input` / `quota` |
-| `m5paper/cmd` | 1 | 指令,如 `ota`(远程触发设备自更新) |
+| `m5paper/events` | 1 | 离散事件:`done` / `needs_input` / `quota` |
+| `m5paper/cmd` | 1 | 指令,如 `ota`(远程触发设备 WiFi-OTA) |
+| `m5paper/state` | 0 + retained | 完整快照(BLE 纯通知端不消费,保留给未来仪表盘) |
 
-事件 JSON 示例:
+事件 JSON 示例(collector 发):
 ```json
 {"kind":"done","src":"codex","project":"my-app",
  "msg":"已完成:导出 storyboard...","meta":"用时 2m · 1.0M tok · gpt-5.5","ts":1783344380}
 ```
+BLE 桥→设备帧(分帧 + `\n` 终止,设备重组):`{"t":"ev","live":true,...}`(实时,蜂鸣+弹屏)、
+`{"t":"ev","live":false,...}`(重连补发的历史,仅进待命列表)、`{"t":"cmd","cmd":"ota"}`。
 
 ## 额度与合规 ⚠️
 
@@ -115,16 +135,17 @@ pio run -t upload -t monitor                      # 首次 USB 烧录
 
 装 hook:`python3 deploy/hooks/install_hooks.py`(幂等追加,自动备份;`--uninstall` 卸载)。
 
-## BLE 现状(规划中的省电通道)
+## 为什么走 BLE
 
 设备当"电池 + 纯通知端"时,WiFi 有个根本矛盾:即时推送要保持长连接(费电)、省电要深睡
-(通知延迟)。**BLE 能兼得低功耗 + 即时**,方向已验证:
+(通知延迟)。**BLE 兼得低功耗 + 即时**,所以运行时纯 BLE、WiFi 仅按需 OTA:
 
-- ✅ **飞牛 NAS(Debian/BlueZ,MediaTek MT7961)当 BLE 中心可行**——headless 常驻无权限坑;
-- ⛔ **macOS 当 BLE 中心不适合常驻**——TCC 权限对后台守护进程基本不放行;
-- ✅ 端到端 PoC 打通:飞牛 → BLE 写通知 → 设备蜂鸣(RSSI -66 够用);
-- 📋 完整版待做:设备 BLE 外设 + 低功耗连接态 + 加回显示 + WiFi 按需 OTA;飞牛跑 MQTT broker +
-  BLE 桥常驻。见 `event_hub/channels/ble.py` 的 TODO。
+- ✅ **飞牛 NAS(Debian/BlueZ,MediaTek MT7961)当 BLE 中心**——headless 常驻无 macOS TCC 权限坑;
+- ✅ 设备维持 BLE 连接(ESP32 默认 modem sleep 低功耗),事件即时到,数天续航;深睡会断 BLE,故不深睡;
+- ✅ 事件正文可能 >MTU → 桥按 MTU 分帧写、`\n` 终止,设备重组;连接后协商 MTU 512 减少分帧;
+- ✅ 设备重启后待命列表不空:桥重连时以 `live:false` 补发最近 N 条历史。
+
+> 距离:PoC 实测飞牛↔真机 RSSI -66(BLE 到 -85 都能连),设备保持在该位置附近即可。
 
 ## 硬件
 

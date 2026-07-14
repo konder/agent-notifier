@@ -1,7 +1,9 @@
 # M5PaperS3 监控 collector 配置
 
 [mqtt]
-host = "127.0.0.1"      # broker 地址(collector 与 broker 同机 → 本地)
+# broker 地址。BLE 版:broker 在飞牛 NAS,collector 在 Mac Mini → 填飞牛内网 IP(如 10.10.10.1)。
+# 旧 WiFi 版(broker 与 collector 同机)填 127.0.0.1。
+host = "127.0.0.1"
 port = 1883
 username = ""            # 留空 = 匿名
 password = ""

@@ -1,0 +1,20 @@
+# agent-notifier BLE 桥(飞牛 NAS / Debian)——订阅本机 MQTT 事件,通过 BLE 转发给 M5PaperS3。
+# 安装:把 __INSTALL_DIR__ 换成仓库在飞牛上的绝对路径,拷到 /etc/systemd/system/ 后:
+#   sudo systemctl daemon-reload && sudo systemctl enable --now ble-bridge
+# 依赖:飞牛已 apt install bluez mosquitto;python3 已装 bleak + paho-mqtt。
+[Unit]
+Description=agent-notifier BLE bridge (MQTT events -> BLE -> M5PaperS3)
+After=network-online.target bluetooth.target mosquitto.service
+Wants=network-online.target bluetooth.target
+
+[Service]
+Type=simple
+WorkingDirectory=__INSTALL_DIR__
+# broker 在本机;如需改用环境变量覆盖:M5_BROKER_HOST / M5_BLE_NAME / M5_HISTORY_N
+Environment=M5_BROKER_HOST=127.0.0.1
+ExecStart=/usr/bin/python3 -m event_hub.channels.ble
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

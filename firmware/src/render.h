@@ -21,6 +21,10 @@ void renderDetail(const Session& s, long nowTs, const unsigned char* jpg, unsign
 void renderNotify(const String& kind, const String& src, const String& project,
                   const String& msg, const String& meta, long ts);
 
+// 待命屏:最近事件历史列表(最新在上)。items 按新→旧传入,n 条;full=true 全刷去残影。
+void renderIdle(const EventItem* items, int n, int batteryPct, bool bleConnected,
+                int fwVersion, bool full);
+
 // 休眠页:大字电量 + 电池条 + 下次唤醒时间(深睡前渲染,墨水屏保留)
 void renderSleep(int batteryPct, const String& wakeAt);
 

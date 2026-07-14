@@ -12,6 +12,7 @@ from urllib.parse import urlparse, parse_qs
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # 仓库根
 from collectors import snapshot
+from collectors.common import clean_text
 
 _publish = None  # 由 start() 注入的发布回调
 
@@ -54,8 +55,10 @@ def build_event(kind: str, source: str, hook: dict, now: int) -> dict:
     else:
         msg = (s.get("last_msg") if s else "") or "任务完成"
     return {
+        # 通知端不显示图片:过滤图片/链接/URL(needs_input 的 hook 文本没走 collectors,这里补过滤);
+        # 上限提到 1200(BLE 分帧可送长文),设备通知窗口尽量多显示正文。
         "kind": kind, "src": source, "project": project,
-        "msg": msg[:600], "meta": _meta(s) if s else "", "ts": now,
+        "msg": clean_text(msg)[:1200], "meta": _meta(s) if s else "", "ts": now,
     }
 
 

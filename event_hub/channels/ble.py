@@ -1,40 +1,168 @@
 #!/usr/bin/env python3
-"""BLE 广播渠道(飞牛 NAS 当 BLE 中心)—— 目前是已验证通过的 PoC。
+"""BLE 广播渠道 —— 飞牛 NAS 当 BLE 中心的常驻桥。
 
-PoC:扫到 M5PaperNotify → 连上 → 往 NUS RX 特征写一条通知。
-用法: python3 -m event_hub.channels.ble [要发送的文本]
-依赖: pip install bleak(Linux 走 BlueZ/dbus,无需编译;macOS 有 TCC 权限坑)
+数据流:collector(Mac Mini)──MQTT──▶ 飞牛 mosquitto ──本模块订阅──▶ BLE 分帧写 ──▶ M5PaperS3
 
-验证结论(见 README「BLE 现状」):飞牛 NAS(Debian/BlueZ,MT7961)能稳定当 BLE 中心,
-设备收到通知蜂鸣,RSSI -66 够用;macOS 当中心受 TCC 权限限制不适合常驻。
+职责:
+  - 订阅本机 broker 的 m5paper/events(事件)+ m5paper/cmd(如 ota)。
+  - 维持到 "M5PaperNotify" 的 BLE 连接(扫描→连→断线自动重连)。
+  - 事件 → {"t":"ev","live":true,...} 分帧写 NUS RX(> MTU 自动切片 + '\n' 终止,设备重组)。
+  - 维护最近 N 条历史;设备(重)连时以 live:false 补发,重启后列表不空。
+  - cmd(ota)→ {"t":"cmd","cmd":"ota"},设备据此临时开 WiFi 做 OTA。
 
-TODO(BLE 完整改造阶段,老板已定「随后」):
-  - 提供与 channels/mqtt.py 对齐的接口:publish_event(ev) / publish_state(snap)
-  - 常驻:订阅本机 MQTT(飞牛跑 broker)m5paper/events → 通过 BLE 写给设备
-  - 断连自动重连、开机自启(systemd)
-  - 设备端:BLE 外设 + 低功耗连接态 + 加回墨水屏显示 + WiFi 按需 OTA
+依赖:bleak(BlueZ,Linux 无需编译)+ paho-mqtt。
+运行:python3 -m event_hub.channels.ble           # 常驻 daemon(systemd: deploy/ble-bridge.service)
+     python3 -m event_hub.channels.ble --test "手动测试通知"   # 一次性发一条(联调用)
 """
+from __future__ import annotations
+
 import asyncio
+import collections
+import json
+import os
 import sys
+import threading
 
 from bleak import BleakScanner, BleakClient
 
-NUS_RX = "6E400002-B5A3-F393-E0A9-E50E24DCCA9E"   # 中心→外设 写
+DEVICE_NAME = os.environ.get("M5_BLE_NAME", "M5PaperNotify")
+NUS_RX = "6E400002-B5A3-F393-E0A9-E50E24DCCA9E"      # 中心→外设 写
+BROKER_HOST = os.environ.get("M5_BROKER_HOST", "127.0.0.1")
+BROKER_PORT = int(os.environ.get("M5_BROKER_PORT", "1883"))
+EVENTS_TOPIC = "m5paper/events"
+CMD_TOPIC = "m5paper/cmd"
+HISTORY_N = int(os.environ.get("M5_HISTORY_N", "8"))
+SCAN_TIMEOUT = 12.0
+RECONNECT_DELAY = 5.0
 
 
-async def main():
-    msg = sys.argv[1] if len(sys.argv) > 1 else "测试通知 · payment-platform 任务完成"
-    print("扫描 M5PaperNotify ...")
-    dev = await BleakScanner.find_device_by_name("M5PaperNotify", timeout=12.0)
+def log(*a):
+    print("[ble-bridge]", *a, file=sys.stderr, flush=True)
+
+
+# ---------- BLE 分帧发送 ----------
+async def send_json(client: BleakClient, obj: dict):
+    data = (json.dumps(obj, ensure_ascii=False) + "\n").encode("utf-8")
+    mtu = getattr(client, "mtu_size", 0) or 23
+    chunk = max(20, mtu - 3)
+    for i in range(0, len(data), chunk):
+        await client.write_gatt_char(NUS_RX, data[i:i + chunk], response=True)
+
+
+def ev_msg(ev: dict, live: bool) -> dict:
+    return {
+        "t": "ev", "live": live,
+        "kind": ev.get("kind", "done"), "src": ev.get("src", ""),
+        "project": ev.get("project", "?"), "msg": ev.get("msg", ""),
+        "meta": ev.get("meta", ""), "ts": ev.get("ts", 0),
+    }
+
+
+# ---------- MQTT(paho 线程)→ asyncio 队列 ----------
+class Bridge:
+    def __init__(self, loop: asyncio.AbstractEventLoop):
+        self.loop = loop
+        self.q: asyncio.Queue = asyncio.Queue()       # 待发给设备的消息(仅连接时投递)
+        self.history: collections.deque = collections.deque(maxlen=HISTORY_N)
+        self.connected = threading.Event()
+
+    def start_mqtt(self):
+        import paho.mqtt.client as mqtt
+
+        def on_connect(c, u, flags, rc, props=None):
+            log(f"MQTT connected rc={rc}, 订阅 {EVENTS_TOPIC} / {CMD_TOPIC}")
+            c.subscribe([(EVENTS_TOPIC, 1), (CMD_TOPIC, 1)])
+
+        def on_message(c, u, m):
+            try:
+                payload = m.payload.decode("utf-8", "replace")
+            except Exception:
+                return
+            if m.topic == CMD_TOPIC:
+                cmd = payload.strip().strip('"')
+                if "ota" in cmd:
+                    self._enqueue({"t": "cmd", "cmd": "ota"})
+                return
+            # 事件
+            try:
+                ev = json.loads(payload)
+            except Exception:
+                return
+            self.history.append(ev)                    # 始终进历史(供重连补发)
+            self._enqueue(ev_msg(ev, live=True))       # 连接时会被消费,否则丢弃(重连由 history 补)
+
+        cli = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
+        cli.on_connect = on_connect
+        cli.on_message = on_message
+        cli.connect(BROKER_HOST, BROKER_PORT, keepalive=60)
+        cli.loop_start()
+        return cli
+
+    def _enqueue(self, item: dict):
+        # 仅在设备已连接时投递即时消息;未连接时丢弃(重连会用 history 补发),避免队列膨胀
+        if item.get("t") == "cmd" or self.connected.is_set():
+            self.loop.call_soon_threadsafe(self.q.put_nowait, item)
+
+    async def run_ble(self):
+        while True:
+            try:
+                log(f"扫描 {DEVICE_NAME} ...")
+                dev = await BleakScanner.find_device_by_name(DEVICE_NAME, timeout=SCAN_TIMEOUT)
+                if not dev:
+                    log("未发现设备,重试")
+                    await asyncio.sleep(RECONNECT_DELAY)
+                    continue
+
+                def _on_disc(_):
+                    self.connected.clear()
+                    log("设备断开")
+
+                async with BleakClient(dev, disconnected_callback=_on_disc) as client:
+                    log(f"已连接 {dev.address} (mtu={getattr(client,'mtu_size','?')})")
+                    # 清掉断连期间堆积的即时队列,避免与 history 补发重复
+                    while not self.q.empty():
+                        self.q.get_nowait()
+                    # 补发历史(旧→新,live=false 只进列表不蜂鸣)
+                    for ev in list(self.history):
+                        await send_json(client, ev_msg(ev, live=False))
+                    self.connected.set()
+                    # 消费即时消息;定时醒来检查是否还连着
+                    while client.is_connected:
+                        try:
+                            item = await asyncio.wait_for(self.q.get(), timeout=5.0)
+                        except asyncio.TimeoutError:
+                            continue
+                        await send_json(client, item)
+            except Exception as e:
+                log(f"BLE 循环异常: {e}")
+            finally:
+                self.connected.clear()
+            await asyncio.sleep(RECONNECT_DELAY)
+
+
+async def _amain():
+    loop = asyncio.get_running_loop()
+    br = Bridge(loop)
+    br.start_mqtt()
+    await br.run_ble()
+
+
+async def _atest(msg: str):
+    dev = await BleakScanner.find_device_by_name(DEVICE_NAME, timeout=SCAN_TIMEOUT)
     if not dev:
-        print("❌ 没找到设备(确认设备已刷 PoC 固件、在广播、且在蓝牙范围内)")
-        return
-    print(f"✓ 找到 {dev.address},连接中...")
+        log("未发现设备"); return
     async with BleakClient(dev) as client:
-        await client.write_gatt_char(NUS_RX, msg.encode("utf-8"), response=True)
-        print(f"✓ 已发送: {msg}")
-    print("完成。设备应已蜂鸣并显示该文本。")
+        await send_json(client, {"t": "ev", "live": True, "kind": "done",
+                                 "src": "codex", "project": "manual-test",
+                                 "msg": msg, "meta": "手动测试", "ts": 0})
+        log("已发送:", msg)
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    if len(sys.argv) >= 3 and sys.argv[1] == "--test":
+        asyncio.run(_atest(sys.argv[2]))
+    else:
+        try:
+            asyncio.run(_amain())
+        except KeyboardInterrupt:
+            pass

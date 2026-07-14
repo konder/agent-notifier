@@ -46,3 +46,12 @@ struct Snapshot {
     Session sessions[MAX_SESSIONS_UI];
     int     nSessions = 0;
 };
+
+// v23 纯通知端:待命屏的历史事件列表项(设备 RAM 环形缓冲)
+struct EventItem {
+    String kind;      // done | needs_input | quota
+    String src;       // codex | claude
+    String project;
+    String summary;   // 一行摘要(列表用,取正文首行/截断)
+    long   ts = 0;
+};

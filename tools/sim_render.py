@@ -273,39 +273,55 @@ def render_notify(ev, out):
     TITLES = {"done": "任务完成", "needs_input": "待输入 / 待确认", "quota": "额度告警"}
     # 外框
     dr.rectangle([10, 10, W - 10, H - 10], outline=BLACK, width=4)
-    # 顶部类型带
-    band_h = 96
+    # 顶部类型带(压扁,把空间让给正文)
+    band_h = 76
     fill = BLACK if kind in ("needs_input", "quota") else WHITE
     dr.rectangle([10, 10, W - 10, 10 + band_h], fill=fill)
     tcol = WHITE if fill == BLACK else BLACK
     mark = {"done": "✓", "needs_input": "!", "quota": "⚠"}[kind]
     # 左侧标记圆
-    dr.ellipse([34, 26, 34 + 64, 26 + 64], outline=tcol, width=4)
-    dr.text((34 + 22, 26 + 8), mark, font=font(HEITI_M, 44), fill=tcol)
-    dr.text((130, 30), TITLES[kind], font=font(HEITI_M, 52), fill=tcol)
-    trr(dr, W - 40, 46, time.strftime("%H:%M", time.localtime(now)), font(PF, 30), tcol)
+    dr.ellipse([32, 22, 32 + 52, 22 + 52], outline=tcol, width=4)
+    dr.text((32 + 17, 22 + 6), mark, font=font(HEITI_M, 36), fill=tcol)
+    dr.text((116, 24), TITLES[kind], font=font(HEITI_M, 44), fill=tcol)
+    trr(dr, W - 34, 34, time.strftime("%H:%M", time.localtime(now)), font(PF, 28), tcol)
 
-    y = 10 + band_h + 30
-    # 项目
+    y = 10 + band_h + 16
+    # 项目(与 meta 同处理:项目名单行)
     tag = "[C] " if ev.get("src") == "codex" else "[A] "
-    dr.text((40, y), tag + ev.get("project", "?"), font=font(HEITI_M, 44), fill=BLACK); y += 66
-    dr.line([40, y, W - 40, y], fill=LGRAY, width=2); y += 20
-    # 正文
-    for para in ev.get("msg", "").split("\n"):
-        for ln in wrap(dr, para or " ", font(PF, 34), W - 100, 5):
-            if y > H - 110: break
-            dr.text((40, y), ln, font=font(PF, 34), fill=BLACK); y += 44
-    # 底部 meta
+    dr.text((36, y), tag + ev.get("project", "?"), font=font(HEITI_M, 36), fill=BLACK); y += 48
+    dr.line([36, y, W - 36, y], fill=LGRAY, width=2); y += 14
+    # 正文:尽量多显示。长文自动缩小字号 + 收紧行距,正文区下探到接近底部。
     meta = ev.get("meta", "")
+    body_bottom = (H - 52) if meta else (H - 20)
+    msg = ev.get("msg", "")
+    bsize, lineH = (30, 39) if len(msg) <= 220 else (26, 33)   # 短文大字,长文塞更多
+    bfont = font(PF, bsize)
+    max_lines = max(1, (body_bottom - y) // lineH)
+    lines = []
+    for para in msg.split("\n"):
+        lines += wrap(dr, para or " ", bfont, W - 80, max_lines - len(lines))
+        if len(lines) >= max_lines:
+            break
+    truncated = len(lines) > max_lines
+    for ln in lines[:max_lines]:
+        dr.text((36, y), ln, font=bfont, fill=BLACK); y += lineH
+    if truncated:                                     # 放不下:提示还有更多(设备上同样处理)
+        trr(dr, W - 40, body_bottom - lineH, "…（更多见终端）", F_TINY, GRAY)
+    # 底部 meta
     if meta:
-        dr.text((40, H - 64), meta, font=font(PF, 28), fill=GRAY)
+        dr.text((36, H - 46), meta, font=font(PF, 26), fill=GRAY)
     img = img.point(lambda p: round(p / 17) * 17); img.save(out); print("saved", out)
 
 
 if __name__ == "__main__" and "--notify" in sys.argv:
+    # 较长正文,演示「尽量多显示正文」；图片/链接在真实链路由 collectors.clean_text 过滤,此处样例已是干净文本
     render_notify({"kind": "done", "src": "claude", "project": "payment-platform",
-                   "msg": "30/88 批次完成,账户资金模型分析全部写出到 batch-*.json,无报错。",
+                   "msg": ("88/88 批次全部完成。账户资金模型分析已写出到 batch-*.json,"
+                           "共 3 类异常账户被标记:超额透支 12 户、循环转账 5 户、休眠激活 2 户。"
+                           "已生成汇总报告,无报错。建议下一步人工复核循环转账那 5 户的关联图谱。"),
                    "meta": "用时 20m10s · 918k tok · opus-4-8", "ts": int(time.time())}, "notify_done.png")
     render_notify({"kind": "needs_input", "src": "codex", "project": "tt-logistics",
-                   "msg": "是否要我继续删除这 3 个废弃接口?它们仍被 2 个测试引用,删除后需同步改测试。",
+                   "msg": ("是否要我继续删除这 3 个废弃接口?它们仍被 2 个测试引用,"
+                           "删除后需同步改测试。涉及:/api/v1/legacy-track、/api/v1/old-eta、"
+                           "/api/v1/mock-push。确认后我会一并更新对应单测并跑一遍回归。"),
                    "meta": "gpt-5.5 · 已等待 2m", "ts": int(time.time())}, "notify_input.png")

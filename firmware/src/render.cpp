@@ -305,57 +305,130 @@ void renderNotify(const String& kind, const String& src, const String& project,
     // 外框
     for (int i = 0; i < 4; i++) d.drawRect(10 + i, 10 + i, SCR_W - 20 - 2 * i, SCR_H - 20 - 2 * i, C_BLACK);
 
-    // 顶部类型带:紧急(needs_input/quota)反白
+    // 顶部类型带(压扁,把空间让给正文):紧急(needs_input/quota)反白
     bool urgent = (kind != "done");
-    int bx = 14, by = 14, bw = SCR_W - 28, bh = 92;
+    int bx = 14, by = 14, bw = SCR_W - 28, bh = 76;
     uint32_t bandbg = urgent ? C_BLACK : C_WHITE;
     uint32_t bandfg = urgent ? C_WHITE : C_BLACK;
     if (urgent) d.fillRect(bx, by, bw, bh, C_BLACK);
     d.drawFastHLine(bx, by + bh, bw, C_BLACK);
 
     // 左侧标记圆 + 记号
-    int cxp = 40, cyp = by + 12, cs = 60;
+    int cxp = 34, cyp = by + 14, cs = 48;
     d.drawCircle(cxp + cs / 2, cyp + cs / 2, cs / 2, bandfg);
     d.drawCircle(cxp + cs / 2, cyp + cs / 2, cs / 2 - 1, bandfg);
     if (kind == "done") {                        // 画对勾
-        int mx = cxp + 16, my = cyp + 32;
-        for (int t = 0; t < 4; t++) {
-            d.drawLine(mx + t, my, mx + 12 + t, my + 12, bandfg);
-            d.drawLine(mx + 12 + t, my + 12, mx + 34 + t, my - 12, bandfg);
+        int mx = cxp + 12, my = cyp + 26;
+        for (int t = 0; t < 3; t++) {
+            d.drawLine(mx + t, my, mx + 9 + t, my + 9, bandfg);
+            d.drawLine(mx + 9 + t, my + 9, mx + 26 + t, my - 10, bandfg);
         }
     } else {                                     // 惊叹号
-        setFont(&fonts::efontCN_24); d.setTextSize(1.6);
+        setFont(&fonts::efontCN_24); d.setTextSize(1.5);
         d.setTextColor(bandfg, bandbg);
-        d.setCursor(cxp + cs / 2 - 6, cyp + 8); d.print("!");
+        d.setCursor(cxp + cs / 2 - 5, cyp + 8); d.print("!");
         d.setTextSize(1);
     }
 
-    // 标题(放大)
-    setFont(&fonts::efontCN_24); d.setTextSize(2);
+    // 标题
+    setFont(&fonts::efontCN_24); d.setTextSize(1.7);
     d.setTextColor(bandfg, bandbg);
-    d.setCursor(120, by + 22); d.print(notifyTitle(kind));
+    d.setCursor(100, by + 18); d.print(notifyTitle(kind));
     d.setTextSize(1);
+    // 时间(右)
     setFont(F_SMALL);
     char tb[8];
-    long hh = (ts % 86400) / 3600, mm = (ts % 3600) / 60;  // 粗略本地时(UTC),仅示意
+    long hh = (ts % 86400) / 3600, mm = (ts % 3600) / 60;  // 粗略时(UTC),仅示意
     snprintf(tb, sizeof(tb), "%02ld:%02ld", hh, mm);
-    // 时间放右侧(设备实际用 RTC 更准,这里先用 ts)
     d.setTextColor(bandfg, bandbg);
-    d.setCursor(SCR_W - 120, by + 34); d.print(tb);
+    d.setCursor(SCR_W - 92, by + 26); d.print(tb);
+    d.setTextColor(C_BLACK, C_WHITE);
 
-    // 项目
-    int y = by + bh + 24;
+    // 项目(单行)
+    int y = by + bh + 14;
     setFont(F_TITLE);
-    txt(40, y, trunc((src == "codex" ? "[C] " : "[A] ") + project, SCR_W - 80), C_BLACK);
-    y += 52;
-    d.drawFastHLine(40, y, SCR_W - 80, C_LGRAY); y += 18;
+    txt(36, y, trunc((src == "codex" ? "[C] " : "[A] ") + project, SCR_W - 72), C_BLACK);
+    y += 44;
+    d.drawFastHLine(36, y, SCR_W - 72, C_LGRAY); y += 14;
 
-    // 正文(结果/问题),大字换行
-    setFont(F_BODY);
-    y = wrapText(40, y, msg, SCR_W - 80, 40, SCR_H - 80, C_BLACK);
+    // 正文:短文大字(24),长文小字(16)+收紧行距,正文区下探到接近底部,尽量多显示
+    bool longMsg = msg.length() > 220;
+    setFont(longMsg ? F_SMALL : F_BODY);
+    int lineH = longMsg ? 26 : 38;
+    int bodyBottom = meta.length() ? (SCR_H - 52) : (SCR_H - 22);
+    wrapText(36, y, msg, SCR_W - 72, lineH, bodyBottom, C_BLACK);
 
     // 底部 meta
-    if (meta.length()) { setFont(F_SMALL); txt(40, SCR_H - 56, trunc(meta, SCR_W - 80), C_GRAY); }
+    if (meta.length()) { setFont(F_SMALL); txt(36, SCR_H - 46, trunc(meta, SCR_W - 72), C_GRAY); }
+
+    d.endWrite();
+    d.display();
+}
+
+// ---------- 待命屏:最近事件历史列表 ----------
+static const char* kindTag(const String& k) {
+    if (k == "done") return "完成";
+    if (k == "needs_input") return "待输入";
+    if (k == "quota") return "额度";
+    return "事件";
+}
+
+void renderIdle(const EventItem* items, int n, int batteryPct, bool ble,
+                int fwVersion, bool full) {
+    auto& d = M5.Display;
+    d.setEpdMode(full ? epd_mode_t::epd_quality : epd_mode_t::epd_fast);
+    d.startWrite();
+    d.fillScreen(C_WHITE);
+
+    // 顶栏:标题 + 右侧 BLE/电量/版本
+    setFont(F_TITLE);
+    txt(18, 10, "待命中", C_BLACK);
+    setFont(F_SMALL);
+    String rt = String(ble ? "BLE●" : "BLE○");
+    if (batteryPct >= 0) rt += "  " + String(batteryPct) + "%";
+    rt += "  v" + String(fwVersion);
+    txtR(SCR_W - 18, 18, rt, C_BLACK);
+    d.drawFastHLine(14, 50, SCR_W - 28, C_BLACK);
+    d.drawFastHLine(14, 51, SCR_W - 28, C_BLACK);
+
+    if (n <= 0) {
+        setFont(F_TITLE);
+        txt(SCR_W / 2 - 120, SCR_H / 2 - 20, "等待事件…", C_MGRAY);
+        d.endWrite(); d.display();
+        return;
+    }
+
+    // 列表:最新在上,每行一条(标签 chip + 项目 + 摘要 ... 时间)
+    long now = 0;   // 无 RTC,用最新一条 ts 作相对基准
+    if (n > 0) now = items[0].ts;
+    int rowH = 56, y = 62;
+    int rows = n < HISTORY_MAX ? n : HISTORY_MAX;
+    for (int i = 0; i < rows && y + rowH <= SCR_H - 8; i++) {
+        const EventItem& e = items[i];
+        bool urgent = (e.kind != "done");
+        // 标签 chip
+        setFont(F_CHIP);
+        String tag = kindTag(e.kind);
+        int cw = tw(tag) + 20;
+        if (urgent) { d.fillRoundRect(18, y + 4, cw, 34, 8, C_BLACK); txt(18 + 10, y + 8, tag, C_WHITE); }
+        else        { d.drawRoundRect(18, y + 4, cw, 34, 8, C_BLACK); txt(18 + 10, y + 8, tag, C_BLACK); }
+        int tx0 = 18 + cw + 12;
+        // 时间(右)
+        String ago = e.ts ? fAgo(e.ts, now) : String();
+        int rightPad = 0;
+        if (ago.length()) { setFont(F_SMALL); rightPad = tw(ago) + 14; txtR(SCR_W - 18, y + 4, ago, C_GRAY); }
+        // 项目(粗)
+        setFont(F_BODY);
+        String proj = (e.src == "codex" ? "[C] " : "[A] ") + e.project;
+        int projW = tw(proj + " ");
+        txt(tx0, y + 2, trunc(proj, SCR_W - 18 - rightPad - tx0), C_BLACK);
+        // 摘要(次行,小字)
+        setFont(F_SMALL);
+        txt(tx0, y + 30, trunc(e.summary, SCR_W - 18 - tx0), C_GRAY);
+        (void)projW;
+        if (i < rows - 1) d.drawFastHLine(18, y + rowH - 2, SCR_W - 36, C_LGRAY);
+        y += rowH;
+    }
 
     d.endWrite();
     d.display();

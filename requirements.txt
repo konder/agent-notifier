@@ -1,2 +1,6 @@
-# collector 唯一第三方依赖(解析器与额度查询均纯 stdlib)
-paho-mqtt>=2.0
+# Gateway(Mac Mini,collector + thumbserver)依赖。解析器/额度均纯 stdlib。
+paho-mqtt>=2.0        # collector 发布到 broker
+Pillow>=9             # thumbserver 灰度缩略图(不看图可省)
+
+# 飞牛 NAS 的 BLE 桥(event_hub/channels/ble.py)另需:bleak + paho-mqtt
+#   pip3 install --break-system-packages bleak paho-mqtt
