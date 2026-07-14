@@ -1,0 +1,20 @@
+# M5PaperS3 监控 collector 配置
+
+[mqtt]
+host = "127.0.0.1"      # broker 地址(collector 与 broker 同机 → 本地)
+port = 1883
+username = ""            # 留空 = 匿名
+password = ""
+state_topic = "m5paper/state"    # retained 全量快照
+event_topic = "m5paper/events"   # 瞬时事件(完成/需输入/锁定)
+
+[collector]
+refresh_sec = 20         # 快照刷新间隔(秒)
+with_quota = true        # 是否拉取额度(claude 日志估算,180s 缓存)
+
+[thumb]
+port = 8899              # 灰度缩略图 HTTP 服务端口(设备详情页拉图用;8080 被占)
+
+[event]
+port = 8898             # hook 事件接收端口(仅本机)
+quota_alert_pct = 85   # 5h/周 已用达此百分比即发额度告警

@@ -1,0 +1,2 @@
+# collector 唯一第三方依赖(解析器与额度查询均纯 stdlib)
+paho-mqtt>=2.0

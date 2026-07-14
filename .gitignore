@@ -1,0 +1,22 @@
+# --- 密钥 / 真实配置(绝不入库)---
+firmware/include/secrets.h        # WiFi/broker 真实值(仓库只带 .example)
+config/config.toml                # 真实运行配置(仓库只带 config.example.toml)
+
+# --- 构建产物 ---
+firmware/.pio/
+experiments/**/.pio/
+fw/                               # OTA 产物(current.bin / version.txt)
+
+# --- Python ---
+__pycache__/
+**/__pycache__/
+*.pyc
+
+# --- 打包 / 临时 ---
+*.tgz
+*.log
+.DS_Store
+
+# 模拟器临时输出(可随时重新渲染)
+sim_list.png
+sim_detail.png
