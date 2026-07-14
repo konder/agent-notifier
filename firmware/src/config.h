@@ -3,7 +3,7 @@
 // v23 起:运行时纯 BLE(外设),WiFi 仅在收到 BLE "ota" 指令时临时开做 OTA。
 
 // 固件版本(每次要 OTA 推新时 +1;gateway 的 /fw/version 返回值 > 此值即触发更新)
-#define FW_VERSION 23
+#define FW_VERSION 24
 
 // ---- BLE(Nordic UART Service,飞牛 NAS 当中心写通知)----
 #define BLE_NAME     "M5PaperNotify"

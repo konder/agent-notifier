@@ -32,8 +32,8 @@ class RxCB : public NimBLECharacteristicCallbacks {
 };
 
 class SrvCB : public NimBLEServerCallbacks {
-    void onConnect(NimBLEServer*) { s_connected = true; }
-    void onDisconnect(NimBLEServer* s) { s_connected = false; s_asm = ""; s->startAdvertising(); }
+    void onConnect(NimBLEServer*) { s_connected = true; Serial.println("[ble] central connected"); }
+    void onDisconnect(NimBLEServer* s) { s_connected = false; s_asm = ""; Serial.println("[ble] central disconnected, re-advertising"); s->startAdvertising(); }
 };
 
 void blelinkInit() {

@@ -101,6 +101,8 @@ static void handleMessage(const String& js) {
     String meta = (const char*)(doc["meta"] | "");
     long ts = doc["ts"] | 0;
 
+    Serial.printf("[ev] rx kind=%s src=%s project=%s live=%d msglen=%d\n",
+                  kind.c_str(), src.c_str(), project.c_str(), live, (int)msg.length());
     addHistory(kind, src, project, msg, ts);
     if (live) {
         showNotify(kind, src, project, msg, meta, ts);   // 蜂鸣 + 全屏通知卡
