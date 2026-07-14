@@ -27,6 +27,8 @@ from bleak import BleakScanner, BleakClient
 
 DEVICE_NAME = os.environ.get("M5_BLE_NAME", "M5PaperNotify")
 NUS_RX = "6E400002-B5A3-F393-E0A9-E50E24DCCA9E"      # 中心→外设 写
+NUS_TX = "6E400003-B5A3-F393-E0A9-E50E24DCCA9E"      # 外设→中心 notify(电量遥测)
+TELEMETRY_LOG = os.environ.get("M5_TELEMETRY_LOG", "/tmp/m5_telemetry.log")
 BROKER_HOST = os.environ.get("M5_BROKER_HOST", "127.0.0.1")
 BROKER_PORT = int(os.environ.get("M5_BROKER_PORT", "1883"))
 EVENTS_TOPIC = "m5paper/events"
@@ -38,6 +40,22 @@ RECONNECT_DELAY = 5.0
 
 def log(*a):
     print("[ble-bridge]", *a, file=sys.stderr, flush=True)
+
+
+def _on_telemetry(_char, data: bytearray):
+    """设备 TX notify 回调:电量遥测 {"t":"bat","pct":..,"up":..} → 追加到日志文件(带墙钟时间)。"""
+    try:
+        txt = bytes(data).decode("utf-8", "replace").strip()
+    except Exception:
+        return
+    import time
+    line = f"{time.strftime('%Y-%m-%d %H:%M:%S')} {txt}"
+    log("telemetry", txt)
+    try:
+        with open(TELEMETRY_LOG, "a") as f:
+            f.write(line + "\n")
+    except Exception as e:
+        log(f"写遥测日志失败: {e}")
 
 
 # ---------- BLE 分帧发送 ----------
@@ -119,6 +137,11 @@ class Bridge:
 
                 async with BleakClient(dev, disconnected_callback=_on_disc) as client:
                     log(f"已连接 {dev.address} (mtu={getattr(client,'mtu_size','?')})")
+                    # 订阅设备上报的电量遥测(TX notify),写入日志文件供实测续航
+                    try:
+                        await client.start_notify(NUS_TX, _on_telemetry)
+                    except Exception as e:
+                        log(f"订阅遥测失败(不影响通知): {e}")
                     # 清掉断连期间堆积的即时队列,避免与 history 补发重复
                     while not self.q.empty():
                         self.q.get_nowait()

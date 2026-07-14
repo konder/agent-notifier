@@ -3,14 +3,28 @@
 // v23 起:运行时纯 BLE(外设),WiFi 仅在收到 BLE "ota" 指令时临时开做 OTA。
 
 // 固件版本(每次要 OTA 推新时 +1;gateway 的 /fw/version 返回值 > 此值即触发更新)
-#define FW_VERSION 24
+#define FW_VERSION 25
 
 // ---- BLE(Nordic UART Service,飞牛 NAS 当中心写通知)----
 #define BLE_NAME     "M5PaperNotify"
 #define NUS_SVC      "6E400001-B5A3-F393-E0A9-E50E24DCCA9E"
-#define NUS_RX       "6E400002-B5A3-F393-E0A9-E50E24DCCA9E"   // 中心→外设 写
+#define NUS_RX       "6E400002-B5A3-F393-E0A9-E50E24DCCA9E"   // 中心→外设 写(事件/指令)
+#define NUS_TX       "6E400003-B5A3-F393-E0A9-E50E24DCCA9E"   // 外设→中心 notify(电量遥测)
 #define BLE_MSG_MAX  4096              // 单条重组消息上限(分帧累加,防溢出)
 #define HISTORY_MAX  8                 // 待命屏历史事件列表最多显示/保留条数
+
+// ---- 省电:电池模式自动轻睡眠(保持 BLE 连接,CPU 在连接事件间隙睡)----
+// BLE 连接参数(1.25ms 单位):拉长间隔 + 从机延迟 → 空闲时约 1s 才醒一次,省电;有事件立即醒。
+#define BLE_CONN_MIN_ITVL  24          // 30ms
+#define BLE_CONN_MAX_ITVL  160         // 200ms
+#define BLE_CONN_LATENCY   4           // 空闲可跳过 4 个事件 → 有效 ~1s
+#define BLE_CONN_TIMEOUT   600         // 6s 监督超时
+#define PM_MIN_FREQ_MHZ    40          // 轻睡眠时降频到此
+#define PM_MAX_FREQ_MHZ    240
+
+// ---- 电量遥测 + 低电告警 ----
+#define BAT_REPORT_MS  300000          // 每 5 分钟经 BLE 上报一次电量(供实测续航)
+#define LOW_BATT_PCT   15              // 低于此且非 USB → 弹低电告警 + 蜂鸣(每次下探只报一次)
 
 #define PIN_BUZZER   21                // G21 BUZ_PWM 无源蜂鸣器
 #define NOTIFY_MS    30000             // 通知全屏卡停留时长(毫秒),之后回待命屏(历史列表)

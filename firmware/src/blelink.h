@@ -10,6 +10,11 @@ void blelinkStop();
 // 当前是否有中心(飞牛 NAS)连着。
 bool bleConnected();
 
-// 取出一条已重组完成的消息(中心分帧写入、以 '\n' 结尾)。有则填入 out 返回 true。
-// 在主循环里轮询调用;收发跨任务通过 FreeRTOS 队列安全交接。
+// 经 TX 特征 notify 一段文本给中心(如电量遥测 JSON)。未连接时静默丢弃。
+void bleNotify(const String& s);
+
+// 阻塞至多 waitMs 取一条完整消息;轻睡眠下 CPU 在此休眠,来消息立即唤醒(近即时)。
+bool blePopMessageWait(String& out, uint32_t waitMs);
+
+// 非阻塞取一条已重组完成的消息(中心分帧写入、以 '\n' 结尾)。有则填入 out 返回 true。
 bool blePopMessage(String& out);

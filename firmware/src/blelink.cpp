@@ -8,7 +8,8 @@
 // 完整消息(strdup 的 char*)通过 FreeRTOS 队列交给主循环,避免跨任务共享 String。
 static volatile bool s_connected = false;
 static QueueHandle_t s_queue = nullptr;
-static String s_asm;   // 分帧累加缓冲(仅 NimBLE 任务访问)
+static String s_asm;                       // 分帧累加缓冲(仅 NimBLE 任务访问)
+static NimBLECharacteristic* s_tx = nullptr;   // 外设→中心 notify(电量遥测)
 
 class RxCB : public NimBLECharacteristicCallbacks {
     void onWrite(NimBLECharacteristic* c) {
@@ -32,8 +33,18 @@ class RxCB : public NimBLECharacteristicCallbacks {
 };
 
 class SrvCB : public NimBLEServerCallbacks {
-    void onConnect(NimBLEServer*) { s_connected = true; Serial.println("[ble] central connected"); }
-    void onDisconnect(NimBLEServer* s) { s_connected = false; s_asm = ""; Serial.println("[ble] central disconnected, re-advertising"); s->startAdvertising(); }
+    // 带 desc 的重载:拿到 conn_handle 后请求长连接参数(省电,空闲 ~1s 才醒)
+    void onConnect(NimBLEServer* s, ble_gap_conn_desc* desc) {
+        s_connected = true;
+        Serial.println("[ble] central connected");
+        s->updateConnParams(desc->conn_handle, BLE_CONN_MIN_ITVL, BLE_CONN_MAX_ITVL,
+                            BLE_CONN_LATENCY, BLE_CONN_TIMEOUT);
+    }
+    void onDisconnect(NimBLEServer* s) {
+        s_connected = false; s_asm = "";
+        Serial.println("[ble] central disconnected, re-advertising");
+        s->startAdvertising();
+    }
 };
 
 void blelinkInit() {
@@ -48,6 +59,7 @@ void blelinkInit() {
     NimBLECharacteristic* rx = svc->createCharacteristic(
         NUS_RX, NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR);
     rx->setCallbacks(new RxCB());
+    s_tx = svc->createCharacteristic(NUS_TX, NIMBLE_PROPERTY::NOTIFY);   // 电量遥测回传
     svc->start();
     NimBLEAdvertising* adv = NimBLEDevice::getAdvertising();
     adv->addServiceUUID(NUS_SVC);
@@ -59,9 +71,29 @@ void blelinkInit() {
 void blelinkStop() {
     NimBLEDevice::deinit(true);
     s_connected = false;
+    s_tx = nullptr;
 }
 
 bool bleConnected() { return s_connected; }
+
+void bleNotify(const String& s) {
+    if (s_connected && s_tx) {
+        s_tx->setValue((uint8_t*)s.c_str(), s.length());
+        s_tx->notify();
+    }
+}
+
+// 阻塞至多 waitMs 取一条消息:轻睡眠期间 CPU 在此休眠,来消息立即唤醒(近即时)
+bool blePopMessageWait(String& out, uint32_t waitMs) {
+    if (!s_queue) return false;
+    char* line = nullptr;
+    if (xQueueReceive(s_queue, &line, pdMS_TO_TICKS(waitMs)) == pdTRUE) {
+        out = String(line);
+        free(line);
+        return true;
+    }
+    return false;
+}
 
 bool blePopMessage(String& out) {
     if (!s_queue) return false;
