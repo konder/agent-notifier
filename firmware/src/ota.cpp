@@ -57,7 +57,12 @@ bool wifiConnectNVS() {
 }
 
 void checkOTA() {
-    String base = "http://" + String(MQTT_HOST) + ":" + String(THUMB_PORT);
+    // OTA 固件服务器(thumbserver)在 collector 所在机(Mac Mini),与 MQTT broker(飞牛)可能不同机,
+    // 故用独立 OTA_HOST;secrets.h 未定义时回退 MQTT_HOST。
+    #ifndef OTA_HOST
+    #define OTA_HOST MQTT_HOST
+    #endif
+    String base = "http://" + String(OTA_HOST) + ":" + String(THUMB_PORT);
     // 1) 取远端版本
     HTTPClient http;
     if (!http.begin(base + "/fw/version")) { Serial.println("[ota] begin 失败"); return; }
