@@ -384,7 +384,7 @@ void renderIdle(const EventItem* items, int n, int batteryPct, bool ble,
     setFont(F_TITLE);
     txt(18, 10, "待命中", C_BLACK);
     setFont(F_SMALL);
-    String rt = String(ble ? "BLE●" : "BLE○");
+    String rt = String(ble ? "NET●" : "NET○");
     if (batteryPct >= 0) rt += "  " + String(batteryPct) + "%";
     rt += "  v" + String(fwVersion);
     txtR(SCR_W - 18, 18, rt, C_BLACK);
