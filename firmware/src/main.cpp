@@ -91,7 +91,7 @@ static void sendBattery() {
     char buf[96];
     snprintf(buf, sizeof(buf), "{\"pct\":%d,\"up\":%lu,\"usb\":%d,\"v\":%d}",
              batteryPercent(), (unsigned long)(millis() / 1000), g_usb ? 1 : 0, FW_VERSION);
-    mqtt.publish(TOPIC_DEVICE, buf);
+    mqtt.publish(TOPIC_DEVICE, buf, true);   // retained:broker 存最新一条,随时可查(测续航)
     Serial.printf("[bat] %s\n", buf);
 }
 
